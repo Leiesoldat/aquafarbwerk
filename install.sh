@@ -49,11 +49,9 @@ if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
 	semanage fcontext -a -t bin_t "$dest/aquapx-plugin"
 fi
 
+# Restarting coolercontrold also restarts the plugin's service (cc-plugin-aquapx), which
+# loads the new binary. Don't restart the plugin separately afterwards: coolercontrold
+# re-applies its saved lighting settings right after starting, and a second plugin restart
+# would cut those requests off ("broken pipe" / "No such file or directory" errors).
 systemctl restart coolercontrold
-# coolercontrold runs the plugin as its own service; restart it too, or the old binary keeps
-# running after an update.
-if systemctl list-unit-files cc-plugin-aquapx.service >/dev/null 2>&1 &&
-	systemctl cat cc-plugin-aquapx.service >/dev/null 2>&1; then
-	systemctl restart cc-plugin-aquapx.service
-fi
 echo "installed plugin to $dest and CLI to $cli_dest/aquapx"
