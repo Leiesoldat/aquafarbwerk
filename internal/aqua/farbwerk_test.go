@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // testdata/farbwerk_writes.txt: "<capture>-<n> <hex>" for every aquasuite config write in the
@@ -330,5 +333,119 @@ func TestFarbwerkTempModesTwoColours(t *testing.T) {
 		if _, temp := fwTempModes[m.Name]; temp && (m.MinColors != 2 || m.MaxColors != 2) {
 			t.Errorf("%s: colours %d-%d, want 2-2", m.Name, m.MinColors, m.MaxColors)
 		}
+	}
+}
+
+// fakeFW is a Farbwerk stand-in: it refuses the first `refuse` config writes with a broken
+// pipe and records writes and saves.
+type fakeFW struct {
+	mu      sync.Mutex
+	cfg     []byte
+	refuse  int
+	writes  [][]byte
+	saves   []time.Time
+	written []time.Time
+}
+
+func (d *fakeFW) GetFeatureReport(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return copy(p, d.cfg), nil
+}
+
+func (d *fakeFW) SendFeatureReport(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.refuse > 0 {
+		d.refuse--
+		return 0, syscall.EPIPE
+	}
+	d.cfg = append([]byte(nil), p...)
+	d.writes = append(d.writes, d.cfg)
+	d.written = append(d.written, time.Now())
+	return len(p), nil
+}
+
+func (d *fakeFW) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if p[0] == 0x02 {
+		d.saves = append(d.saves, time.Now())
+	}
+	return len(p), nil
+}
+
+func (d *fakeFW) Close() error { return nil }
+
+func fastFWTiming(t *testing.T) {
+	t.Helper()
+	bd, sg, wr := fwBatchDelay, fwSaveGap, fwWriteRetry
+	fwBatchDelay, fwSaveGap, fwWriteRetry = 20*time.Millisecond, 80*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { fwBatchDelay, fwSaveGap, fwWriteRetry = bd, sg, wr })
+}
+
+func newFakeFW(t *testing.T) (*Farbwerk, *fakeFW) {
+	fx, _ := loadFW(t)
+	d := &fakeFW{cfg: fwCopy(fx["options2-7"])}
+	return &Farbwerk{dev: d, ConfigPath: filepath.Join(t.TempDir(), "cfg.hex")}, d
+}
+
+// CoolerControl re-applying every channel at once (All + 4 outputs) becomes one config write
+// and one save containing all five changes.
+func TestFarbwerkBatchesBurst(t *testing.T) {
+	fastFWTiming(t)
+	f, d := newFakeFW(t)
+	state := filepath.Join(t.TempDir(), "levels.json")
+	var wg sync.WaitGroup
+	errs := make([]error, 5)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			errs[n-1] = f.Apply(n, "rotating", nil, nil)
+		}(i + 1)
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); errs[4] = f.AllOn(state) }()
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("request %d: %v", i, err)
+		}
+	}
+	if len(d.writes) != 1 || len(d.saves) != 1 {
+		t.Fatalf("burst became %d writes / %d saves, want 1 / 1", len(d.writes), len(d.saves))
+	}
+	for n := 1; n <= fwOutputs; n++ {
+		o, _ := fwBlock(n)
+		if d.writes[0][o]&^fwFadeBit != FwModeRotating {
+			t.Errorf("output %d missing from the merged write", n)
+		}
+	}
+	if !fwCRCOK(d.writes[0]) {
+		t.Error("merged write has a bad CRC")
+	}
+}
+
+// A refused write is retried; a later write waits fwSaveGap after the previous save.
+func TestFarbwerkWriteRetryAndPacing(t *testing.T) {
+	fastFWTiming(t)
+	f, d := newFakeFW(t)
+	d.refuse = 2
+	if err := f.Apply(4, "rotating", nil, nil); err != nil {
+		t.Fatalf("write not retried: %v", err)
+	}
+	if err := f.Apply(4, "static", &[3]byte{255, 0, 0}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.writes) != 2 || len(d.saves) != 2 {
+		t.Fatalf("%d writes / %d saves, want 2 / 2", len(d.writes), len(d.saves))
+	}
+	if gap := d.written[1].Sub(d.saves[0]); gap < fwSaveGap-5*time.Millisecond {
+		t.Errorf("second write %v after the save, want >= %v", gap, fwSaveGap)
+	}
+	d.refuse = fwWriteTries
+	if err := f.Apply(4, "rotating", nil, nil); err == nil {
+		t.Error("write refused every time but no error returned")
 	}
 }

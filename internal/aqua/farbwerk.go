@@ -63,9 +63,21 @@ const (
 	fwRetryDelay   = 60 * time.Millisecond
 	fwMaxReadFails = 3
 	fwSensorQuiet  = 100 * time.Millisecond // gap after a sensor report before a config read
+	fwWriteTries   = 4
 
 	// fwSolidSensor is the software sensor (0-based) whose mode carries solid colours.
 	fwSolidSensor = 3
+)
+
+// Write pacing. aquasuite's config writes are seconds apart (user-paced), each followed by the
+// save report ~10 ms later; the Farbwerk refuses a config write ("broken pipe") that arrives
+// while it is still storing the previous one. CoolerControl re-applies every channel at once
+// on startup, so changes arriving together are merged into one write (fwBatchDelay), a write
+// waits fwSaveGap after the last save, and a refused write is retried with a growing delay.
+var (
+	fwBatchDelay = 250 * time.Millisecond
+	fwSaveGap    = time.Second
+	fwWriteRetry = 300 * time.Millisecond
 )
 
 // fwSaveReport is the constant 11-byte save report, sent as an OUTPUT report after a config
@@ -80,8 +92,22 @@ const (
 )
 
 // Farbwerk is an open connection to the Farbwerk's HID interface.
+// fwDevice is the part of a HID handle the Farbwerk code uses (*ghid.Device; a fake in tests).
+type fwDevice interface {
+	GetFeatureReport(p []byte) (int, error)
+	SendFeatureReport(p []byte) (int, error)
+	Write(p []byte) (int, error)
+	Close() error
+}
+
+// fwBatch is one coalesced config write; every caller merged into it gets its result.
+type fwBatch struct {
+	done chan struct{}
+	err  error
+}
+
 type Farbwerk struct {
-	dev    *ghid.Device
+	dev    fwDevice
 	NoSave bool
 	mu     sync.Mutex // serialises feature/output report traffic on the handle
 
@@ -91,6 +117,9 @@ type Farbwerk struct {
 	Source     string
 	readFails  int       // consecutive failed readConfig calls; at fwMaxReadFails the device isn't asked
 	lastSensor time.Time // when the last software sensor report was sent
+	lastSave   time.Time // when the last config was written and saved
+	pending    []byte    // config with changes waiting for the next batched write
+	batch      *fwBatch  // the batched write pending will go out in
 }
 
 // OpenFarbwerk opens the Farbwerk's HID interface (Enumerate+OpenPath, see OpenD5Next).
@@ -205,8 +234,24 @@ func (f *Farbwerk) writeConfig(cfg []byte) error {
 		return fmt.Errorf("bad config length %d", len(cfg))
 	}
 	fwFixCRC(cfg)
-	if _, err := f.dev.SendFeatureReport(cfg); err != nil {
-		return fmt.Errorf("set report 0x03: %w", err)
+	if d := fwSaveGap - time.Since(f.lastSave); d > 0 {
+		time.Sleep(d) // let the Farbwerk finish storing the previous config
+	}
+	var err error
+	for try := 0; try < fwWriteTries; try++ {
+		if try > 0 {
+			log.Printf("farbwerk: config write refused (%v); retrying", err)
+			time.Sleep(fwWriteRetry << (try - 1))
+		}
+		if d := fwSensorQuiet - time.Since(f.lastSensor); d > 0 {
+			time.Sleep(d)
+		}
+		if _, err = f.dev.SendFeatureReport(cfg); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("set report 0x03 (refused %d times): %w", fwWriteTries, err)
 	}
 	if p := f.configPath(); p != "" {
 		if err := saveFile(p, []byte(hex.EncodeToString(cfg)+"\n")); err != nil {
@@ -216,7 +261,9 @@ func (f *Farbwerk) writeConfig(cfg []byte) error {
 	if f.NoSave {
 		return nil
 	}
-	if _, err := f.dev.Write(fwSaveReport); err != nil {
+	_, err = f.dev.Write(fwSaveReport)
+	f.lastSave = time.Now()
+	if err != nil {
 		return fmt.Errorf("save report 0x02 (output): %w", err)
 	}
 	return nil
@@ -372,16 +419,7 @@ func FarbwerkLightingModes() []LightingMode {
 
 // Apply applies a lighting selection to output n (1-4). See fwApply.
 func (f *Farbwerk) Apply(n int, mode string, c1, c2 *[3]byte) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cfg, err := f.readConfig()
-	if err != nil {
-		return err
-	}
-	if err := fwApply(cfg, n, mode, c1, c2); err != nil {
-		return err
-	}
-	return f.writeConfig(cfg)
+	return f.fwModify(func(cfg []byte) error { return fwApply(cfg, n, mode, c1, c2) })
 }
 
 // FarbwerkOutput summarises one output's settings.
@@ -397,7 +435,13 @@ type FarbwerkOutput struct {
 func (f *Farbwerk) Read() ([fwOutputs]FarbwerkOutput, error) {
 	var out [fwOutputs]FarbwerkOutput
 	f.mu.Lock()
-	cfg, err := f.readConfig()
+	var cfg []byte
+	var err error
+	if f.pending != nil {
+		cfg = append([]byte(nil), f.pending...)
+	} else {
+		cfg, err = f.readConfig()
+	}
 	f.mu.Unlock()
 	if err != nil {
 		return out, err
@@ -517,37 +561,29 @@ func fwAllOn(cfg []byte, snap *FarbwerkLevels) {
 // AllOff turns every output off by zeroing its brightness (modes and colours are kept), saving
 // the previous levels to statePath so AllOn can restore them, even after a restart.
 func (f *Farbwerk) AllOff(statePath string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cfg, err := f.readConfig()
-	if err != nil {
-		return err
-	}
-	saved, lit := fwAllOff(cfg)
-	if lit && statePath != "" {
-		if err := saveFarbwerkLevels(statePath, saved); err != nil {
-			return fmt.Errorf("save Farbwerk levels: %w", err)
+	return f.fwModify(func(cfg []byte) error {
+		saved, lit := fwAllOff(cfg)
+		if lit && statePath != "" {
+			if err := saveFarbwerkLevels(statePath, saved); err != nil {
+				return fmt.Errorf("save Farbwerk levels: %w", err)
+			}
 		}
-	}
-	return f.writeConfig(cfg)
+		return nil
+	})
 }
 
 // AllOn restores the outputs AllOff turned off (full brightness if nothing was saved).
 func (f *Farbwerk) AllOn(statePath string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cfg, err := f.readConfig()
-	if err != nil {
-		return err
-	}
 	var snap *FarbwerkLevels
 	if statePath != "" {
 		if s, err := loadFarbwerkLevels(statePath); err == nil {
 			snap = &s
 		}
 	}
-	fwAllOn(cfg, snap)
-	return f.writeConfig(cfg)
+	return f.fwModify(func(cfg []byte) error {
+		fwAllOn(cfg, snap)
+		return nil
+	})
 }
 
 func saveFarbwerkLevels(path string, l FarbwerkLevels) error {
@@ -607,18 +643,46 @@ func FarbwerkStripName(v byte) string {
 	return fmt.Sprintf("unknown %d", v)
 }
 
-// fwModify runs fn on the config and writes it back.
+// fwModify runs fn on the current config (including changes still waiting to be written) and
+// queues the result. Changes arriving within fwBatchDelay of each other go out as one config
+// write + save; every caller waits for that write and gets its result.
 func (f *Farbwerk) fwModify(fn func(cfg []byte) error) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	cfg, err := f.readConfig()
-	if err != nil {
+	cfg := f.pending
+	if cfg == nil {
+		c, err := f.readConfig()
+		if err != nil {
+			f.mu.Unlock()
+			return err
+		}
+		cfg = c
+	}
+	work := append([]byte(nil), cfg...)
+	if err := fn(work); err != nil {
+		f.mu.Unlock()
 		return err
 	}
-	if err := fn(cfg); err != nil {
-		return err
+	f.pending = work
+	b := f.batch
+	if b == nil {
+		b = &fwBatch{done: make(chan struct{})}
+		f.batch = b
+		go f.flush(b)
 	}
-	return f.writeConfig(cfg)
+	f.mu.Unlock()
+	<-b.done
+	return b.err
+}
+
+// flush writes the pending config after fwBatchDelay, ending batch b.
+func (f *Farbwerk) flush(b *fwBatch) {
+	time.Sleep(fwBatchDelay)
+	f.mu.Lock()
+	cfg := f.pending
+	f.pending, f.batch = nil, nil
+	b.err = f.writeConfig(cfg)
+	f.mu.Unlock()
+	close(b.done)
 }
 
 // SetStripType sets output n's strip type (the colour channel order of the connected strip).
