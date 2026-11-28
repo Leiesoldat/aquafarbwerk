@@ -158,7 +158,7 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c70", GROUP="input", MODE="0660", TAG+="
   - **Sensor-controlled modes** (testing): Single Colour with brightness or saturation
     following the pump speed or pressure, and Colour Gradient, Colour Switch and Bar Graph
     following either (aquasuite's palettes). Range with `aquapx ls range <from> <to>`
-    (pump speed in rpm, default 0–2500; pressure default 0–1000). A range is kept when a mode
+    (pump speed in rpm, default 0–2500; pressure in mbar, default 0–1000). A range is kept when a mode
     for the same sensor is picked again.
   - The D5 Next and LEAKSHIELD get no software sensor feed in aquasuite's USB traffic, so
     unlike the Farbwerk they can't follow the CPU or GPU temperature yet.

@@ -571,7 +571,7 @@ usage:
   aquapx ls  effect <name> [color]     LEAKSHIELD onboard effect (base colour default red)
   aquapx ls  effects                   list LEAKSHIELD effects and sensor modes
   aquapx ls  sensor                    show the LEAKSHIELD's sensor + range
-  aquapx ls  range <from> <to>         sensor range (pump speed: rpm; pressure: raw)
+  aquapx ls  range <from> <to>         sensor range (pump speed: rpm; pressure: mbar)
   aquapx ls  off                       LEAKSHIELD brightness 0
   aquapx ls  dump                      show LEAKSHIELD colour state
   aquapx fw  dump                      Farbwerk: show all four outputs

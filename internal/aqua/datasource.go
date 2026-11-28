@@ -46,7 +46,7 @@ var D5NextSources = []DataSource{
 // LeakshieldSources are the LEAKSHIELD's own sensors usable as a data source.
 var LeakshieldSources = []DataSource{
 	{"pumpspeed", "Pump Speed", 0x0004, 0, 2500, "rpm"},
-	{"pressure", "Pressure", 0x0000, 0, 1000, "raw"},
+	{"pressure", "Pressure", 0x0000, 0, 1000, "mbar"},
 }
 
 // dsKind is how a data-source mode uses its source.
