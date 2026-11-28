@@ -70,8 +70,9 @@ func LeakshieldEffects() []string {
 }
 
 // LeakshieldLightingModes is the LEAKSHIELD's CoolerControl mode catalogue, in aquasuite's order.
+// Sensor-controlled modes (datasource.go) follow the effects.
 func LeakshieldLightingModes() []LightingMode {
-	return []LightingMode{
+	return append([]LightingMode{
 		{"status", "System Status (match fans)", 0, 0},
 		{"off", "Off", 0, 0},
 		{"rainbow", "Rotating Rainbow", 0, 0},
@@ -90,12 +91,21 @@ func LeakshieldLightingModes() []LightingMode {
 		{"colorswitch", "Colour Switch", 0, 0},
 		{"bargraph", "Bar Graph", 0, 0},
 		{"colorgradient", "Colour Gradient", 0, 0},
-	}
+	}, dsLightingModes(LeakshieldSources, dsBright, dsSat, dsGrad, dsSwitch, dsBar)...)
 }
 
 // lsApplyEffect writes effect name's captured block into cfg and, for single-colour effects,
 // the RGB colour into its primary slot. withColor=false leaves aquasuite's captured colours.
 func lsApplyEffect(cfg []byte, name string, withColor bool, r, g, b byte) error {
+	if m, ok := lsDSModes[name]; ok {
+		blk := cfg[lsOffEffect:lsOffBlockEnd]
+		prev := append([]byte(nil), blk...)
+		if err := lsApplyEffect(cfg, m.kind.effect, withColor && m.kind.colour, r, g, b); err != nil {
+			return err
+		}
+		dsApply(blk, prev, m)
+		return nil
+	}
 	h, ok := lsEffectBlocks[name]
 	if !ok {
 		return fmt.Errorf("unknown LEAKSHIELD effect %q (have %v)", name, LeakshieldEffects())
@@ -134,4 +144,29 @@ func leakshieldEffectName(v byte) string {
 		}
 	}
 	return ""
+}
+
+// SensorState returns the LEAKSHIELD's data-source settings.
+func (l *Leakshield) SensorState() (DataSourceState, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cfg, err := l.readConfig()
+	if err != nil {
+		return DataSourceState{}, err
+	}
+	return dsRead(cfg[lsOffEffect:lsOffBlockEnd], LeakshieldSources), nil
+}
+
+// SetSensorRange sets the LEAKSHIELD's sensor range, in the sensor's units.
+func (l *Leakshield) SetSensorRange(from, to float64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cfg, err := l.readConfig()
+	if err != nil {
+		return err
+	}
+	if err := dsRangeOn(cfg[lsOffEffect:lsOffBlockEnd], from, to); err != nil {
+		return err
+	}
+	return l.writeConfig(cfg)
 }

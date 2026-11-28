@@ -208,7 +208,7 @@ func (s *Server) Health(_ context.Context, _ *dsv1.HealthRequest) (*dsv1.HealthR
 func (s *Server) ListDevices(_ context.Context, _ *dsv1.ListDevicesRequest) (*dsv1.ListDevicesResponse, error) {
 	_ = s.waitDev(30 * time.Second)
 	lm := &mv1.LightingModes{}
-	for _, m := range aqua.LightingModes() {
+	for _, m := range aqua.PumpLightingModes() {
 		fn := m.Label
 		lm.LightingMode = append(lm.LightingMode, &mv1.LightingModes_LightingMode{
 			Name:         m.Name,

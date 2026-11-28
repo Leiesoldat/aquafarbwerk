@@ -123,6 +123,26 @@ func main() {
 		}
 		fmt.Printf("D5 Next -> brightness %d%%\n", pct)
 
+	case "sensor":
+		for _, o := range []struct {
+			name  string
+			rgbpx bool
+		}{{"pump", false}, {"rgbpx", true}} {
+			st, err := d.SensorState(o.rgbpx)
+			if err != nil {
+				fatal(err)
+			}
+			printSensor("D5 Next "+o.name, st)
+		}
+	case "range":
+		if len(args) < 5 || (args[2] != "pump" && args[2] != "rgbpx") {
+			fatal(fmt.Errorf("usage: aquapx d5 range pump|rgbpx <from> <to>  (in the sensor's units, e.g. °C)"))
+		}
+		from, to := parseRange(args[3], args[4])
+		if err := d.SetSensorRange(args[2] == "rgbpx", from, to); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("D5 Next %s sensor range -> %g-%g\n", args[2], from, to)
 	case "effects":
 		var es []string
 		for n := range aqua.Effects {
@@ -130,6 +150,8 @@ func main() {
 		}
 		sort.Strings(es)
 		fmt.Println("effects:", strings.Join(es, ", "))
+		fmt.Println("sensor modes (pump):", modeNames(aqua.D5PumpSensorModes()))
+		fmt.Println("sensor modes (rgbpx):", modeNames(aqua.D5RGBpxSensorModes()))
 
 	default:
 		usage()
@@ -197,6 +219,23 @@ func runLeakshield(args []string) {
 			fatal(err)
 		}
 		fmt.Println("LEAKSHIELD -> off (brightness 0)")
+
+	case "sensor":
+		st, err := l.SensorState()
+		if err != nil {
+			fatal(err)
+		}
+		printSensor("LEAKSHIELD", st)
+
+	case "range":
+		if len(args) < 3 {
+			fatal(fmt.Errorf("usage: aquapx ls range <from> <to>  (in the sensor's units: rpm for pump speed)"))
+		}
+		from, to := parseRange(args[1], args[2])
+		if err := l.SetSensorRange(from, to); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("LEAKSHIELD sensor range -> %g-%g\n", from, to)
 
 	case "effect":
 		if len(args) < 2 {
@@ -473,6 +512,42 @@ func fwModeNames() string {
 	return strings.Join(ns, ", ")
 }
 
+func printSensor(what string, st aqua.DataSourceState) {
+	if st.Source == "none" {
+		fmt.Printf("%s: no sensor\n", what)
+		return
+	}
+	var ctl []string
+	if st.Brightness {
+		ctl = append(ctl, "brightness")
+	}
+	if st.Saturation {
+		ctl = append(ctl, "saturation")
+	}
+	c := "effect"
+	if len(ctl) > 0 {
+		c = strings.Join(ctl, "+")
+	}
+	fmt.Printf("%s: sensor %s controls %s, range %d-%d %s\n", what, st.Source, c, st.From, st.To, st.Unit)
+}
+
+func modeNames(ms []aqua.LightingMode) string {
+	var ns []string
+	for _, m := range ms {
+		ns = append(ns, m.Name)
+	}
+	return strings.Join(ns, ", ")
+}
+
+func parseRange(a, b string) (float64, float64) {
+	from, err1 := strconv.ParseFloat(a, 64)
+	to, err2 := strconv.ParseFloat(b, 64)
+	if err1 != nil || err2 != nil {
+		fatal(fmt.Errorf("bad range %q %q", a, b))
+	}
+	return from, to
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `aquapx — Aquacomputer RGB control
 
@@ -483,6 +558,9 @@ usage:
   aquapx d5  brightness [0-100]        show / set brightness (pump ring + RGBpx LEDs)
   aquapx d5  dump                      show current LED state
   aquapx d5  effects                   list effect names (shared by pump and RGBpx LED)
+                                       and sensor modes (e.g. water-bright, water-bar)
+  aquapx d5  sensor                    show the sensor + range of the pump and RGBpx LED
+  aquapx d5  range pump|rgbpx <f> <t>  sensor range in the sensor's units (water temp: °C)
   aquapx d5  rgbpx color <RRGGBB|name> RGBpx LED output: solid colour
   aquapx d5  rgbpx effect <name> [col] RGBpx LED output: onboard effect
   aquapx d5  rgbpx off                 RGBpx LED output: colour at brightness 0
@@ -491,7 +569,9 @@ usage:
   aquapx hfn dump                      show palette hues
   aquapx ls  color <RRGGBB|name>       LEAKSHIELD colour (hue/sat/brightness)
   aquapx ls  effect <name> [color]     LEAKSHIELD onboard effect (base colour default red)
-  aquapx ls  effects                   list LEAKSHIELD effects
+  aquapx ls  effects                   list LEAKSHIELD effects and sensor modes
+  aquapx ls  sensor                    show the LEAKSHIELD's sensor + range
+  aquapx ls  range <from> <to>         sensor range (pump speed: rpm; pressure: raw)
   aquapx ls  off                       LEAKSHIELD brightness 0
   aquapx ls  dump                      show LEAKSHIELD colour state
   aquapx fw  dump                      Farbwerk: show all four outputs

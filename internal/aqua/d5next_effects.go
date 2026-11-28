@@ -114,17 +114,18 @@ type d5Channel struct {
 	blockStart int
 	onOffFlag  bool                    // clear the pump's on/off flag (offOnOff) when set
 	overrides  map[string]map[int]byte // per-channel block bytes that differ from the table
+	dsModes    map[string]dsMode       // sensor-controlled modes this output offers
 }
 
 var (
 	// d5Pump is the pump's own LED ring. Overall brightness is the master brightness byte
 	// (offBright), set separately by SetBrightness; it dims the RGBpx LEDs too.
-	d5Pump = d5Channel{name: "pump", blockStart: offEffect, onOffFlag: true}
+	d5Pump = d5Channel{name: "pump", blockStart: offEffect, onOffFlag: true, dsModes: d5PumpDSModes}
 	// d5Strip is the RGBpx LED output header (aquasuite: "RGBpx LED"), decoded 2026-11-27 from a
 	// capture of aquasuite stepping through all 23 effects on it: block [243:310), everything
 	// else in the report unchanged. Every block matches the pump's except Sound Bars' byte 4
 	// (0x0e here, 0x14 on the pump; likely its bar length).
-	d5Strip = d5Channel{name: "strip", blockStart: offStripEffect, overrides: map[string]map[int]byte{
+	d5Strip = d5Channel{name: "strip", blockStart: offStripEffect, dsModes: d5RGBpxDSModes, overrides: map[string]map[int]byte{
 		"soundbars": {4: 0x0e},
 	}}
 )
@@ -141,6 +142,15 @@ func d5ApplyEffect(cfg []byte, name string, withColor bool, r, g, b byte) error 
 // can't override the brightness slider, and the black CoolerControl sends self-coloured
 // effects can't blank the LEDs.
 func d5ApplyEffectOn(cfg []byte, ch d5Channel, name string, withColor bool, r, g, b byte) error {
+	if m, ok := ch.dsModes[name]; ok {
+		blk := cfg[ch.blockStart : ch.blockStart+d5BlockLen]
+		prev := append([]byte(nil), blk...)
+		if err := d5ApplyEffectOn(cfg, ch, m.kind.effect, withColor && m.kind.colour, r, g, b); err != nil {
+			return err
+		}
+		dsApply(blk, prev, m)
+		return nil
+	}
 	h, ok := d5EffectBlock(name)
 	if !ok {
 		return fmt.Errorf("unknown D5 Next effect %q (have %v)", name, D5NextEffects())
@@ -183,3 +193,18 @@ func BrightnessPercentToByte(pct int) byte {
 
 // BrightnessByteToPercent maps the device's 0..255 brightness to 0..100%.
 func BrightnessByteToPercent(v byte) int { return int(math.Round(float64(v) * 100 / 255)) }
+
+// d5KnownMode reports whether name is an effect or a sensor mode of channel ch.
+func d5KnownMode(ch d5Channel, name string) bool {
+	if _, ok := d5EffectBlock(name); ok {
+		return true
+	}
+	_, ok := ch.dsModes[name]
+	return ok
+}
+
+// D5PumpSensorModes / D5RGBpxSensorModes are the sensor-controlled CoolerControl modes.
+func D5PumpSensorModes() []LightingMode { return dsLightingModes(D5NextSources, dsBright, dsSat) }
+func D5RGBpxSensorModes() []LightingMode {
+	return dsLightingModes(D5NextSources, dsBright, dsSat, dsBar)
+}

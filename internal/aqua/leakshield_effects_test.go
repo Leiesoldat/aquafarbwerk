@@ -103,7 +103,8 @@ func TestLeakshieldEffectSelectors(t *testing.T) {
 		}
 	}
 	for _, m := range LeakshieldLightingModes() {
-		if _, ok := lsEffectBlocks[m.Name]; !ok && m.Name != "off" && m.Name != "status" {
+		_, ds := lsDSModes[m.Name]
+		if _, ok := lsEffectBlocks[m.Name]; !ok && !ds && m.Name != "off" && m.Name != "status" {
 			t.Errorf("mode %s has no effect block", m.Name)
 		}
 	}

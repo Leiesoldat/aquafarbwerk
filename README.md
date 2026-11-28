@@ -44,6 +44,13 @@ aquapx ls off                     # LEAKSHIELD brightness 0
 aquapx ls dump                    # LEAKSHIELD colour state
 aquapx d5 brightness [0-100]      # D5 Next brightness (pump ring + RGBpx LEDs)
 aquapx d5 rgbpx color|effect|off|dump  # D5 Next RGBpx LED output
+aquapx d5 effect water-bright [c]  # D5 Next pump: colour, brightness follows water temp
+aquapx d5 rgbpx effect water-bar   # RGBpx LED: bar graph of water temp
+aquapx d5 sensor                  # D5 Next: sensor + range of pump and RGBpx LED
+aquapx d5 range pump|rgbpx <from> <to>  # D5 Next sensor range (water temp in °C)
+aquapx ls effect pumpspeed-gradient  # LEAKSHIELD: colour gradient following pump speed
+aquapx ls sensor                  # LEAKSHIELD: sensor + range
+aquapx ls range <from> <to>       # LEAKSHIELD sensor range (pump speed: rpm)
 aquapx fw dump                    # Farbwerk: all four RGB outputs
 aquapx fw set <1-4> <mode> [c1] [c2]  # Farbwerk output mode and colours
 aquapx fw strip <1-4> [grb|brg]   # Farbwerk: show / set an output's strip type (colour order)
@@ -107,6 +114,10 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c70", GROUP="input", MODE="0660", TAG+="
     the RGBpx LEDs (verified on hardware). Effects never change it: a picked colour's
     brightness goes in the effect's colour slot and has a smaller effect. CLI:
     `aquapx d5 brightness [0-100]`.
+  - **Sensor-controlled modes** (testing): the pump ring and RGBpx LED can follow the water
+    temperature: "Water Temp: Brightness" / "Water Temp: Saturation" (your colour, brightness
+    or saturation rises with the temperature) and, on the RGBpx LED, "Water Temp: Bar Graph".
+    Range in °C with `aquapx d5 range pump|rgbpx <from> <to>` (aquasuite's default is 20–70).
   - **RGBpx LED** (the RGBpx output header): a second lighting channel on the D5 Next in
     CoolerControl, next to "Pump". It has the same effects and menu, minus System Status.
     Decoded from a capture of aquasuite stepping through all 23 effects on it
@@ -144,8 +155,15 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0c70", GROUP="input", MODE="0660", TAG+="
     puts the chosen colour in its main colour slot. Single-colour effects (Breathing, Scanner,
     etc.) take CoolerControl's colour; rainbow, flame and the palette effects use their own.
     Choosing Single Colour or Off switches back from any running effect.
-  - Not adjustable yet: effect speed/direction, Bar Graph's data source and range, and the
-    extra palette colours (these stay at aquasuite's defaults).
+  - **Sensor-controlled modes** (testing): Single Colour with brightness or saturation
+    following the pump speed or pressure, and Colour Gradient, Colour Switch and Bar Graph
+    following either (aquasuite's palettes). Range with `aquapx ls range <from> <to>`
+    (pump speed in rpm, default 0–2500; pressure default 0–1000). A range is kept when a mode
+    for the same sensor is picked again.
+  - The D5 Next and LEAKSHIELD get no software sensor feed in aquasuite's USB traffic, so
+    unlike the Farbwerk they can't follow the CPU or GPU temperature yet.
+  - Not adjustable yet: effect speed/direction, limits, and the extra palette colours (these
+    stay at aquasuite's defaults).
   - CLI: `aquapx ls effects` lists them, `aquapx ls effect <name> [colour]` sets one, and
     `aquapx ls probe` does a read-only dump of the config report.
 

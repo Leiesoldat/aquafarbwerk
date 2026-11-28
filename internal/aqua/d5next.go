@@ -164,7 +164,7 @@ func (d *D5Next) SetColor(r, g, b byte) error {
 func (d *D5Next) SetEffect(name string, r, g, b byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d5EffectBlock(name); !ok {
+	if !d5KnownMode(d5Pump, name) {
 		return fmt.Errorf("unknown D5 Next effect %q (have %v)", name, D5NextEffects())
 	}
 	cfg, err := d.readConfig()
@@ -218,7 +218,7 @@ func (d *D5Next) Brightness() (int, error) {
 func (d *D5Next) StripSetEffect(name string, r, g, b byte) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if _, ok := d5EffectBlock(name); !ok {
+	if !d5KnownMode(d5Strip, name) {
 		return fmt.Errorf("unknown D5 Next effect %q (have %v)", name, D5NextEffects())
 	}
 	cfg, err := d.readConfig()
@@ -321,4 +321,37 @@ func rgbToHSV(r, g, b byte) (float64, float64, float64) {
 		}
 	}
 	return h, s, v
+}
+
+// SensorState returns the data-source settings of the pump ring (rgbpx=false) or RGBpx LED.
+func (d *D5Next) SensorState(rgbpx bool) (DataSourceState, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cfg, err := d.readConfig()
+	if err != nil {
+		return DataSourceState{}, err
+	}
+	ch := d5Pump
+	if rgbpx {
+		ch = d5Strip
+	}
+	return dsRead(cfg[ch.blockStart:ch.blockStart+d5BlockLen], D5NextSources), nil
+}
+
+// SetSensorRange sets the sensor range (in the sensor's units) of the pump ring or RGBpx LED.
+func (d *D5Next) SetSensorRange(rgbpx bool, from, to float64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cfg, err := d.readConfig()
+	if err != nil {
+		return err
+	}
+	ch := d5Pump
+	if rgbpx {
+		ch = d5Strip
+	}
+	if err := dsRangeOn(cfg[ch.blockStart:ch.blockStart+d5BlockLen], from, to); err != nil {
+		return err
+	}
+	return d.writeConfig(cfg)
 }

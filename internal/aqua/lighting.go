@@ -39,6 +39,10 @@ func LightingModes() []LightingMode {
 	}
 }
 
+// PumpLightingModes is the pump ring's full CoolerControl list: effects plus sensor modes
+// (datasource.go).
+func PumpLightingModes() []LightingMode { return append(LightingModes(), D5PumpSensorModes()...) }
+
 // ApplyLighting applies a CoolerControl lighting selection (mode + base colour) to the pump.
 func (d *D5Next) ApplyLighting(mode string, r, g, b byte) error {
 	switch mode {
@@ -60,7 +64,7 @@ func StripLightingModes() []LightingMode {
 			ms = append(ms, m)
 		}
 	}
-	return ms
+	return append(ms, D5RGBpxSensorModes()...)
 }
 
 // StripApplyLighting applies a CoolerControl lighting selection to the RGB output strip.
