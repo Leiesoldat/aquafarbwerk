@@ -59,11 +59,12 @@ const (
 	fwSensorUnset  = 0x7fff
 	fwSensorSet    = 0x06 // per-sensor "present" byte
 
-	fwReadTries    = 4
-	fwRetryDelay   = 60 * time.Millisecond
-	fwMaxReadFails = 3
-	fwSensorQuiet  = 100 * time.Millisecond // gap after a sensor report before a config read
-	fwWriteTries   = 4
+	fwReadTries      = 4
+	fwRetryDelay     = 60 * time.Millisecond
+	fwMaxReadFails   = 3
+	fwSensorQuiet    = 100 * time.Millisecond // gap after a sensor report before a config read
+	fwReadRetryAfter = time.Minute            // after giving up on reads, ask the device again after this
+	fwWriteTries     = 4
 
 	// fwSolidSensor is the software sensor (0-based) whose mode carries solid colours.
 	fwSolidSensor = 3
@@ -115,7 +116,8 @@ type Farbwerk struct {
 	// came from: "device", "saved" or "template".
 	ConfigPath string
 	Source     string
-	readFails  int       // consecutive failed readConfig calls; at fwMaxReadFails the device isn't asked
+	readFails  int       // consecutive failed readConfig calls; at fwMaxReadFails the device isn't asked for fwReadRetryAfter
+	readGaveUp time.Time // when readFails reached fwMaxReadFails
 	lastSensor time.Time // when the last software sensor report was sent
 	lastSave   time.Time // when the last config was written and saved
 	pending    []byte    // config with changes waiting for the next batched write
@@ -165,6 +167,9 @@ func (f *Farbwerk) Close() error {
 // template the first time (fwTemplateHex). After fwMaxReadFails failed calls in a row the
 // device isn't asked again.
 func (f *Farbwerk) readConfig() ([]byte, error) {
+	if f.readFails >= fwMaxReadFails && time.Since(f.readGaveUp) >= fwReadRetryAfter {
+		f.readFails = 0 // try the device again: it may have been reset
+	}
 	if f.readFails < fwMaxReadFails {
 		if d := fwSensorQuiet - time.Since(f.lastSensor); d > 0 {
 			time.Sleep(d) // let the Farbwerk finish handling the sensor report first
@@ -190,7 +195,8 @@ func (f *Farbwerk) readConfig() ([]byte, error) {
 		f.readFails++
 		log.Printf("farbwerk: config read failed %d times (%v); using the saved copy", fwReadTries, lastErr)
 		if f.readFails == fwMaxReadFails {
-			log.Printf("farbwerk: config reads keep failing; not asking the device again")
+			f.readGaveUp = time.Now()
+			log.Printf("farbwerk: config reads keep failing; using the saved copy for %v before asking again", fwReadRetryAfter)
 		}
 	}
 	return fwStoredConfig(f.configPath(), &f.Source)

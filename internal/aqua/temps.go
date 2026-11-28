@@ -109,10 +109,13 @@ func RunFarbwerkSensors(f *Farbwerk, stop <-chan struct{}) {
 		temps := [4]float64{CPUTemp(), gpu, math.NaN(), FarbwerkSolidTemp}
 		if err := f.SetSoftwareSensors(temps); err != nil {
 			if !failing {
-				log.Printf("farbwerk: software sensors: %v", err)
+				log.Printf("farbwerk: software sensors: %v (the Farbwerk may need a USB reset)", err)
 			}
 			failing = true
 		} else {
+			if failing {
+				log.Printf("farbwerk: software sensors accepted again")
+			}
 			failing = false
 		}
 		select {
